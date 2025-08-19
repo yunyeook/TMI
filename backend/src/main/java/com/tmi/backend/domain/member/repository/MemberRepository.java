@@ -3,12 +3,21 @@ package com.tmi.backend.domain.member.repository;
 import com.tmi.backend.domain.member.dto.response.MemberStats;
 import com.tmi.backend.domain.member.entity.Member;
 import com.tmi.backend.domain.member.entity.Provider;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.QueryHint;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
 public interface MemberRepository extends JpaRepository<Member, Long> {
+
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @QueryHints({ @QueryHint(name = "jakarta.persistence.lock.timeout", value = "0") })
+  @Query("select m from Member m where m.id = :id")
+  Optional<Member> findByIdWithLock(@Param("id") Long id);
 
   Optional<Member> findById(Long memberId);
 

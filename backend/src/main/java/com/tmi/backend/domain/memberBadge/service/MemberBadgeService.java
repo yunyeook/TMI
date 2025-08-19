@@ -15,6 +15,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,13 +49,20 @@ public class MemberBadgeService {
       return ServiceResult.fail(ErrorCode.BADGE_NOT_FOUND);
     }
 
-    Long memberId = memberBadgeRepository.findMemberIdById(memberBadgeId);
+    Long memberId = memberBadge.getMember().getId();
+
     if (!SecurityUtil.memberCheck(memberId)) {
       return ServiceResult.fail(ErrorCode.AUTH_ACCESS_DENIED);
     }
-    
-    if (memberId == null) {
-      return ServiceResult.fail(ErrorCode.USER_NOT_FOUND);
+
+    Member member;
+    try {
+      member = memberRepository.findByIdWithLock(memberId).orElse(null);
+      if (member == null) {
+        return ServiceResult.fail(ErrorCode.USER_NOT_FOUND);
+      }
+    } catch (PessimisticLockingFailureException e) {
+      return ServiceResult.fail(ErrorCode.BADGE_UPDATE_CONFLICT);
     }
 
     memberBadgeRepository.cancleRepresentative(memberId);
@@ -61,7 +70,6 @@ public class MemberBadgeService {
 
     return ServiceResult.ok(Map.of("memberBadgeId", memberBadgeId));
   }
-
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public boolean acceptedBadge(Long memberId, Long badgeId) {

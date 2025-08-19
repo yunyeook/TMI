@@ -13,108 +13,100 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Arrays;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpMethod;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
-import org.springframework.security.web.util.matcher.OrRequestMatcher;
-import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * HTTP 요청에서 JWT를 꺼내 검증하고 Authentication을 SecurityContext에 설정
+ * JWT 토큰을 검증하고 SecurityContext에 인증 정보를 설정하는 필터
+ * SecurityConfig의 permitAll() 설정에 따라 접근 제어가 이루어지므로,
+ * 이 필터는 JWT 검증에만 집중합니다.
  */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
   private final JwtTokenProvider jwtTokenProvider;
   private final ObjectMapper objectMapper;
-  private static final PathPatternRequestMatcher.Builder PP =
-      PathPatternRequestMatcher.withDefaults();
 
-  private final RequestMatcher publicEndpoints = new OrRequestMatcher(
-      PP.matcher(HttpMethod.GET, "/api/v1/**"),
+  private static final String ACCESS_TOKEN_COOKIE_NAME = "ACCESS_TOKEN";
 
-      // 공개 POST (회원가입/재발급/로그아웃)
-      PP.matcher(HttpMethod.POST, "/api/v1/member/signup"),
-      PP.matcher(HttpMethod.POST, "/api/v1/auth/refresh"),
-//      PP.matcher(HttpMethod.POST, "/api/v1/auth/logout/**"),
-
-      // OAuth2 엔드포인트 (메서드 구분 불필요하면 오버로드로 method 생략 가능)
-      PP.matcher("/api/v1/oauth2/**"),
-      PP.matcher("/oauth2/**"),
-      PP.matcher("/api/v1/oauth2/authorization/**"),
-      PP.matcher("/api/v1/oauth2/code/**"),
-      PP.matcher("/login/oauth2/code/**"),
-      PP.matcher("/login"),
-
-      //
-      PP.matcher("/"),
-      PP.matcher("/favicon.ico"),
-      PP.matcher("/error"),
-      PP.matcher("/css/**"),
-      PP.matcher("/js/**"),
-      PP.matcher("/images/**"),
-      PP.matcher("/assets/**"),
-      PP.matcher("/webjars/**"),
-      PP.matcher("/.well-known/**")
-
-  );
-
+  /**
+   * CORS Preflight 요청은 JWT 검증을 건너뜁니다.
+   */
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
-    // CORS Preflight는 항상 스킵
-    if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
-      return true;
-    }
-    // 공개 경로면 JWT 필터 자체를 건너뜀
-    return publicEndpoints.matches(request);
+    return "OPTIONS".equalsIgnoreCase(request.getMethod());
   }
 
-
   @Override
-  protected void doFilterInternal(HttpServletRequest request,
+  protected void doFilterInternal(
+      HttpServletRequest request,
       HttpServletResponse response,
-      FilterChain filterChain)
-      throws ServletException, IOException {
+      FilterChain filterChain) throws ServletException, IOException {
 
-    //ACCESS-TOKEN 가져오기
-    String token = resolveAccessToken(request);
+    try {
+      String token = resolveAccessToken(request);
 
-    if (token != null) {
-      if (jwtTokenProvider.validateToken(token)) {
-        Authentication auth = jwtTokenProvider.getAuthentication(token);
-
-        // 토큰을 기반으로 인증 객체 저장
-        SecurityContextHolder.getContext().setAuthentication(auth);
-      } else {
-
-        ApiResponse<Void> errorResponse = ApiErrorResponse.error(ErrorCode.AUTH_INVALID_TOKEN);
-
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-        objectMapper.writeValue(response.getWriter(), errorResponse);
-        return;
+      // 토큰이 존재하는 경우에만 검증
+      if (token != null) {
+        validateAndSetAuthentication(token, response);
       }
-    }
+      // 토큰이 없으면 그냥 통과 (SecurityConfig의 permitAll이 처리)
 
-    filterChain.doFilter(request, response);
+      filterChain.doFilter(request, response);
+
+    } catch (Exception e) {
+      log.error("JWT 필터 처리 중 예외 발생", e);
+      sendErrorResponse(response, ErrorCode.AUTH_INVALID_TOKEN);
+    }
   }
 
   /**
-   * 쿠키에서 ACCESS_TOKEN 추출하는 API
+   * JWT 토큰을 검증하고 인증 정보를 SecurityContext에 설정
+   */
+  private void validateAndSetAuthentication(String token, HttpServletResponse response)
+      throws IOException {
+    if (jwtTokenProvider.validateToken(token)) {
+      Authentication authentication = jwtTokenProvider.getAuthentication(token);
+      SecurityContextHolder.getContext().setAuthentication(authentication);
+      log.debug("JWT 인증 성공 - Principal: {}", authentication.getName());
+    } else {
+      log.warn("유효하지 않은 JWT 토큰");
+      sendErrorResponse(response, ErrorCode.AUTH_INVALID_TOKEN);
+    }
+  }
+
+  /**
+   * 쿠키에서 ACCESS_TOKEN을 추출
    */
   private String resolveAccessToken(HttpServletRequest request) {
-    if (request.getCookies() == null) {
+    Cookie[] cookies = request.getCookies();
+    if (cookies == null) {
       return null;
     }
-    return Arrays.stream(request.getCookies())
-        .filter(c -> "ACCESS_TOKEN".equals(c.getName()))
+
+    return Arrays.stream(cookies)
+        .filter(cookie -> ACCESS_TOKEN_COOKIE_NAME.equals(cookie.getName()))
         .findFirst()
         .map(Cookie::getValue)
         .orElse(null);
+  }
+
+  /**
+   * 에러 응답을 JSON 형식으로 반환
+   */
+  private void sendErrorResponse(HttpServletResponse response, ErrorCode errorCode)
+      throws IOException {
+    ApiResponse<Void> errorResponse = ApiErrorResponse.error(errorCode);
+
+    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    response.setContentType("application/json");
+    response.setCharacterEncoding("UTF-8");
+
+    objectMapper.writeValue(response.getWriter(), errorResponse);
   }
 }

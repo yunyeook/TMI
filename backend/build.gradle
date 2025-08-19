@@ -68,7 +68,7 @@ dependencies {
     implementation("io.github.bonigarcia:webdrivermanager:6.2.0")
 
     // bucket4j
-    implementation("com.bucket4j:bucket4j-core:8.10.1")
+    implementation("com.bucket4j:bucket4j-redis:8.10.1")
 }
 
 tasks.named('test') {

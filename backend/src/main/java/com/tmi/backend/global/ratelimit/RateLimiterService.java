@@ -2,35 +2,37 @@ package com.tmi.backend.global.ratelimit;
 
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
+import io.github.bucket4j.BucketConfiguration;
+import io.github.bucket4j.distributed.proxy.ProxyManager;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class RateLimiterService {
 
-  private final Map<String, Bucket> cache = new ConcurrentHashMap<>();
+  private final ProxyManager<byte[]> proxyManager;
 
   public Bucket resolveBucket(String userId) {
-    Bucket bucket = cache.computeIfAbsent(userId, this::newBucket);
-    log.info("userId: {}, bucket hash: {}, available tokens: {}",
-        userId, System.identityHashCode(bucket), bucket.getAvailableTokens());
-    return bucket;
+    Supplier<BucketConfiguration> configSupplier = this::getConfig;
+
+    // Redis에서 버킷을 가져오거나 없으면 생성
+    byte[] key = userId.getBytes(StandardCharsets.UTF_8);
+    return proxyManager.builder().build(key, configSupplier);
   }
 
-
-  private Bucket newBucket(String userId) {
-    Bandwidth limit = Bandwidth.builder()
-        .capacity(3) // 최대 3회
-        .refillIntervally(3, Duration.ofDays(1)) // 하루 단위로 3개 리필
-        .build();
-
-    return Bucket.builder()
-        .addLimit(limit)
+  private BucketConfiguration getConfig() {
+    return BucketConfiguration.builder()
+        .addLimit(Bandwidth.builder()
+            .capacity(3) // 최대 3회
+            .refillIntervally(3, Duration.ofDays(1)) // 하루 단위로 3개 리필
+            .build())
         .build();
   }
 }
-
